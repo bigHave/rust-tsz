@@ -211,7 +211,7 @@ impl<'a> BstreamReader<'a>{
     }
 
 
-    fn read_uvarint(&mut self) -> Result<u64,io::Error> {
+    pub fn read_uvarint(&mut self) -> Result<u64,io::Error> {
         let mut x:u64 = 0;
         let mut s:usize = 0;
         let mut i:usize = 0;
@@ -241,7 +241,7 @@ impl<'a> BstreamReader<'a>{
         }
     }
 
-    fn read_varint(&mut self) -> Result<i64,io::Error> {
+    pub fn read_varint(&mut self) -> Result<i64,io::Error> {
         let ux = self.read_uvarint()?;
         let mut x = (ux >> 1) as i64;
         if ux & 1 != 0 {
