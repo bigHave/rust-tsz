@@ -1,8 +1,8 @@
 use std::io;
 
 
-
-struct Bstream {
+// Bstream is a stream of bits
+pub struct Bstream {
     // todo: 写入的话，需要可变引用？读取则使用不可变引用
     stream : Vec<u8>, // data stream
     count: u8 // how many right-most bits are available for writing in the current byte
@@ -12,15 +12,16 @@ type Bit = bool;
 
 const BIT_ONE: Bit = true;
 const BIT_ZERO: Bit = false;
+const MAX_VARINT_LEN64: usize = 10;
 
 impl Bstream {
     // new
-    // fn new() -> bstream {
-    //     bstream {
-    //         stream: Vec::new(),
-    //         count: 0
-    //     }
-    // }
+    pub fn new(stream:Vec<u8>) -> Bstream {
+        Bstream {
+            stream,
+            count: 0
+        }
+    }
     fn bytes(&self) -> &Vec<u8> {
         &self.stream
     }
@@ -77,10 +78,27 @@ impl Bstream {
             nbits -=1;
         }
     }
+
+    fn write_uvarint(&mut self,mut u:u64) {
+        while u >= 0x80 {
+            let byte = u as u8 | 0x80;
+            self.write_byte(byte);
+            u = u >> 7;
+        }
+        self.write_byte(u as u8)
+    }
+
+    fn write_varint(&mut self,mut i:i64) {
+        let mut ui = (i as u64) << 1;
+        if i < 0 {
+            ui = !ui;
+        }
+        self.write_uvarint(ui)
+    }
 }
 
 
-struct BstreamReader<'a> {
+pub struct BstreamReader<'a> {
     stream : &'a Vec<u8>,
     stream_offset: usize,
     
@@ -92,7 +110,7 @@ struct BstreamReader<'a> {
 
 // }
 impl<'a> BstreamReader<'a>{
-    fn new(stream: &'a Vec<u8>) -> BstreamReader<'a> {
+    pub fn new(stream: &'a Vec<u8>) -> BstreamReader<'a> {
         BstreamReader {
             stream,
             stream_offset: 0,
@@ -101,7 +119,7 @@ impl<'a> BstreamReader<'a>{
         }
     }
 
-    fn read_bit(&mut self) -> Result<Bit,io::Error> {
+    pub fn read_bit(&mut self) -> Result<Bit,io::Error> {
         if self.valid == 0 {
             if !self.load_next_buffer(1){
                 return Err(io::Error::from(io::ErrorKind::UnexpectedEof))
@@ -110,7 +128,7 @@ impl<'a> BstreamReader<'a>{
         return self.read_bit_fast()
     }
 
-    fn read_bit_fast(&mut self) -> Result<Bit,io::Error> {
+    pub fn read_bit_fast(&mut self) -> Result<Bit,io::Error> {
         if self.valid == 0 {
             return Err(io::Error::from(io::ErrorKind::UnexpectedEof)) // todo: maybe use a custom error
         }
@@ -120,7 +138,7 @@ impl<'a> BstreamReader<'a>{
         Ok(bit)
     }
     
-    fn read_bits(&mut self,mut nbits:u8) -> Result<u64,io::Error> {
+    pub fn read_bits(&mut self,mut nbits:u8) -> Result<u64,io::Error> {
         if self.valid == 0 {
             if !self.load_next_buffer(nbits) {
                 return Err(io::Error::from(io::ErrorKind::UnexpectedEof))
@@ -144,7 +162,7 @@ impl<'a> BstreamReader<'a>{
         Ok(v)
     }
 
-    fn read_bits_fast(&mut self,nbits:u8) -> Result<u64,io::Error> {
+    pub fn read_bits_fast(&mut self,nbits:u8) -> Result<u64,io::Error> {
         if nbits > self.valid { 
             return Err(io::Error::from(io::ErrorKind::UnexpectedEof)) 
         }
@@ -154,7 +172,7 @@ impl<'a> BstreamReader<'a>{
 
     }
 
-    fn read_byte(&mut self) -> Result<u8,io::Error> {
+    pub fn read_byte(&mut self) -> Result<u8,io::Error> {
         match self.read_bits(8){
             Ok(bits) => Ok(bits as u8),
             Err(e) => Err(e)
@@ -191,7 +209,50 @@ impl<'a> BstreamReader<'a>{
         
         return true
     }
+
+
+    fn read_uvarint(&mut self) -> Result<u64,io::Error> {
+        let mut x:u64 = 0;
+        let mut s:usize = 0;
+        let mut i:usize = 0;
+        loop {
+            match self.read_byte(){
+                // when error happens, no need to keep offset right
+                Ok(byte) => {
+                    if i == MAX_VARINT_LEN64 {
+                        // overflow
+                        return Ok(0)
+                    }
+                    if byte < 0x80 {
+                        // overflow
+                        if i == MAX_VARINT_LEN64-1 && byte > 1 {
+                            return Ok(0)
+                        }
+                        return Ok(x | (u64::from(byte) << s));
+                    }
+                    i+=1;
+                    x = x | (u64::from(byte & 0x7f) << s);
+                    s += 7;
+                }
+                Err(e) => {
+                    return Err(e)
+                }
+            }
+        }
+    }
+
+    fn read_varint(&mut self) -> Result<i64,io::Error> {
+        let ux = self.read_uvarint()?;
+        let mut x = (ux >> 1) as i64;
+        if ux & 1 != 0 {
+            x = !x
+        }
+        return Ok(x);
+    }
 }
+
+
+
 
 #[test]
 fn test_bstream() {
@@ -272,5 +333,65 @@ fn test_bstream() {
             }
         }
         assert_eq!(v as u64,actual);
+    }
+}
+
+static cases : [i64;17] = [
+    -1 << 63,
+    // -1 << 63 +1,
+    -1,
+    0,
+    1,
+    2,
+    10,
+    20,
+    63,
+    64,
+    65,
+    127,
+    128,
+    129,
+    255,
+    256,
+    257,
+    1 << 63-1
+];
+
+#[test]
+fn test_uvarint() {
+    let mut bstream = Bstream {
+        stream: vec![],
+        count: 0
+    };
+
+
+    // write
+    for v in &cases {
+        bstream.write_uvarint(*v as u64);
+    }
+    let mut r = BstreamReader::new(bstream.bytes());
+    for v in &cases {
+        let actual = r.read_uvarint().unwrap();
+        assert_eq!(*v as u64,actual);
+    }
+}
+
+
+#[test]
+fn test_varint() {
+    let mut bstream = Bstream {
+        stream: vec![],
+        count: 0
+    };
+
+
+    // write
+    for v in &cases {
+        bstream.write_varint(*v);
+    }
+    let mut r = BstreamReader::new(bstream.bytes());
+    for v in &cases {
+        let actual = r.read_varint().unwrap();
+        assert_eq!(*v,actual);
     }
 }
