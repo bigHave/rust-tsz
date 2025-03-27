@@ -3,7 +3,6 @@ use std::io;
 
 // Bstream is a stream of bits
 pub struct Bstream {
-    // todo: 写入的话，需要可变引用？读取则使用不可变引用
     stream : Vec<u8>, // data stream
     count: u8 // how many right-most bits are available for writing in the current byte
 }
@@ -22,11 +21,25 @@ impl Bstream {
             count: 0
         }
     }
-    fn bytes(&self) -> &Vec<u8> {
+    
+    // this is some particial method for xor chunk to update the chunk header
+    // maybe this is not a good way to do this
+    pub fn modify_first_two_bytes(&mut self,byt1:u8,byt2:u8) {
+        if self.stream.len() > 2 {
+            self.stream[0] = byt1;
+            self.stream[1] = byt2;
+        }else {
+            self.stream.resize(2, 0);
+            self.stream[0] = byt1;
+            self.stream[1] = byt2;
+        }
+    }
+
+    pub fn bytes(&mut self) -> &Vec<u8> {
         &self.stream
     }
 
-    fn write_bit(&mut self,bit: Bit) {
+    pub fn write_bit(&mut self,bit: Bit) {
         if self.count == 0 {
             self.stream.push(0);
             self.count = 8;
@@ -41,7 +54,7 @@ impl Bstream {
         self.count -= 1;
     }
 
-    fn write_byte(&mut self,byte: u8) {
+    pub fn write_byte(&mut self,byte: u8) {
         if self.count == 0 {
             self.stream.push(0);
             self.count = 8;
@@ -57,7 +70,7 @@ impl Bstream {
     }
 
     // write_bits writes the nbits right-most bits of u to the stream in left-to-right order.
-    fn write_bits(&mut self,mut u:u64, mut nbits:i32) {
+    pub fn write_bits(&mut self,mut u:u64, mut nbits:i32) {
         //let mut nbits = nbits as u8;
         u = u << (64 - nbits);
         while nbits >= 8 {
@@ -79,7 +92,7 @@ impl Bstream {
         }
     }
 
-    fn write_uvarint(&mut self,mut u:u64) {
+    pub fn write_uvarint(&mut self,mut u:u64) {
         while u >= 0x80 {
             let byte = u as u8 | 0x80;
             self.write_byte(byte);
@@ -88,7 +101,7 @@ impl Bstream {
         self.write_byte(u as u8)
     }
 
-    fn write_varint(&mut self,mut i:i64) {
+    pub fn write_varint(&mut self,i:i64) {
         let mut ui = (i as u64) << 1;
         if i < 0 {
             ui = !ui;
@@ -97,7 +110,7 @@ impl Bstream {
     }
 }
 
-
+#[derive(Debug)]
 pub struct BstreamReader<'a> {
     stream : &'a Vec<u8>,
     stream_offset: usize,
@@ -113,7 +126,7 @@ impl<'a> BstreamReader<'a>{
     pub fn new(stream: &'a Vec<u8>) -> BstreamReader<'a> {
         BstreamReader {
             stream,
-            stream_offset: 0,
+            stream_offset:0,
             buffer: 0,
             valid: 0,
         }
