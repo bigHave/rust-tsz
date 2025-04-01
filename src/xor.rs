@@ -1,5 +1,6 @@
 use crate::bstream::{Bstream,BstreamReader};
 use std::io;
+use rand::Rng;
 pub struct XORChunk {
     b:Bstream
 }
@@ -17,34 +18,40 @@ impl XORChunk {
         String::from("XOR")
     }
 
-    pub fn iterator(&mut self) -> XORIterator {
-        XORIterator::new(self.b.bytes())
+    fn bytes(&self) -> &[u8] {
+        self.b.read_bytes()
+    }
+
+    pub fn iterator(&self) -> XORIterator {
+        XORIterator::new(self.bytes())
     }
     pub fn appender(&mut self) -> Result<XORAppender,Error>{
-        let mut it = XORIterator::new(self.b.bytes());
         // To get an appender we must know the state it would have if we had
 	    // appended all existing data from scratch.
 	    // We iterate through the end and populate via the iterator's state.
-        for _ in &mut it{
-            // do nothing
-        }
-        if let Some(err) = it.err {
-            return Err(err)
-        }
-        let mut leading = 0;
-        let bytes = self.b.bytes();
-        let num = u16::from_be_bytes([bytes[0],bytes[1]]);
-        if num == 0 {
-            leading = 0xff;
-        }
-        let a = XORAppender {
-            b: &mut self.b,
-            t: 0,
-            v: 0.0,
-            t_delta: 0,
-            leading: leading,
-            trailing: 0,
+        let (num,state) = {
+            let bytes = self.b.bytes();
+            let num = u16::from_be_bytes([bytes[0],bytes[1]]);
+            let mut it = XORIterator::new(bytes);
+            for _ in &mut it {}
+        
+            if let Some(err) = it.err {
+                return Err(err);
+            }
+            (num, (it.t, it.val, it.t_delta, it.leading, it.trailing))
         };
+        let (t, val, t_delta, leading, trailing) = state;
+        let mut a = XORAppender {
+            b: &mut self.b,
+            t,
+            v: val,
+            t_delta,
+            leading,
+            trailing,
+        };
+        if num == 0 {
+            a.leading = 0xff;
+        }
         Ok(a)
     }
 }
@@ -75,7 +82,8 @@ impl<'a> XORAppender<'a> {
             self.write_v_delta(v);
         } else {
             t_delta = (t- self.t) as u64;
-            let dod = (t_delta - self.t_delta) as i64;
+            //let dod = (t_delta - self.t_delta) as i64;
+            let dod = t_delta.wrapping_sub(self.t_delta) as i64;
             // Gorilla has a max resolution of seconds, Prometheus milliseconds.
 		    // Thus we use higher value range steps with larger bit size.
             match dod {
@@ -114,6 +122,7 @@ impl<'a> XORAppender<'a> {
         let v_delta = v.to_bits() ^ self.v.to_bits();
         if v_delta == 0 {
             self.b.write_bit(false);
+            return;
         }
         // otherwise, write a '1' anyway
         self.b.write_bit(true);
@@ -171,7 +180,7 @@ struct XORIterator<'a> {
 }
 
 impl<'a> XORIterator<'a> {
-    pub fn new(stream: &'a Vec<u8>) -> XORIterator<'a> {
+    pub fn new(stream: &'a [u8]) -> XORIterator<'a> {
         // read first 2 bytes as chunk header
         let mut br = BstreamReader::new(stream);
         let mut num_total:u16 = 0;
@@ -252,7 +261,7 @@ impl Iterator for XORIterator<'_> {
 
         // read rest data point
         let mut d:u8 = 0;
-        for i in 0..4 {
+        for _i in 0..4 {
             d = d << 1;
             let bit = self.read_bit().ok()?;
             if bit == 0 {
@@ -284,7 +293,8 @@ impl Iterator for XORIterator<'_> {
         if sz != 0 {
             let mut bits = self.read_bits_or_fast(sz).ok()?;
             if bits > (1 << (sz -1)) {
-                bits = bits - (1 << sz);
+                //bits = bits - (1 << sz);
+                bits = bits.wrapping_sub(1<<sz);
             }
             dod = bits as i64;
         }
@@ -346,17 +356,56 @@ impl<'a> XORIterator<'a> {
 fn test_xor_chunk() {
     let mut chunk = XORChunk::new();
     let mut appender = chunk.appender().unwrap();
-    appender.Append(1234123324,1243535.123);
-    appender.Append(1234123325,1243536.123);
-    appender.Append(1234123326,1243537.124);
-    appender.Append(1234123327,1243538.123);
-    appender.Append(1234123328,1243539.125);
 
-
-    let mut reader = chunk.iterator();
-    let mut cnt = 1;
-    while let Some(_) = reader.next() {
-        println!("{}", reader.t);
-        println!("{}", reader.val);
+    #[derive(Debug,PartialEq)]
+    struct DataPoint {
+        ts:i64,
+        val:f64,
     }
+
+    let mut cases = vec![];
+    let mut ts = 1234123324 as i64;
+    let mut val = 1243535.123;
+    for i in 0..300 {
+        ts = ts + rand::thread_rng().gen_range(1..10001);
+        if i % 2 == 0 {
+            val = val + rand::thread_rng().gen_range(1..1000000) as f64;
+        } else {
+            val = val - rand::thread_rng().gen_range(1..1000000) as f64;
+        }
+
+        // Start with a new appender every 10th sample. This emulates starting
+		// appending to a partially filled chunk.
+        if i %10 == 0 {
+            appender = chunk.appender().unwrap();
+        }
+        appender.Append(ts, val);
+        cases.push(DataPoint{
+            ts,
+            val
+        });
+    }
+
+    // 1. Expand iterator in simple case.
+    let mut reader = chunk.iterator();
+    let mut res = vec![];
+    while let Some(_) = reader.next() {
+        res.push(DataPoint{
+            ts: reader.t,
+            val: reader.val
+        });
+    }
+    assert_eq!(res, cases);
+
+    // 2. Expand second iterator while reusing first one.
+    let mut reader_2 = chunk.iterator();
+    let mut res_2 = vec![];
+    while let Some(_) = reader_2.next() {
+        res_2.push(DataPoint{
+            ts: reader_2.t,
+            val: reader_2.val
+        });
+    }
+    assert_eq!(res_2, cases);
+    reader.next();
 }
