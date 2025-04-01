@@ -39,6 +39,10 @@ impl Bstream {
         &self.stream
     }
 
+    pub fn read_bytes(&self) -> &Vec<u8>  {
+        &self.stream
+    }
+    
     pub fn write_bit(&mut self,bit: Bit) {
         if self.count == 0 {
             self.stream.push(0);
@@ -112,7 +116,7 @@ impl Bstream {
 
 #[derive(Debug)]
 pub struct BstreamReader<'a> {
-    stream : &'a Vec<u8>,
+    stream : &'a [u8],
     stream_offset: usize,
     
     buffer : u64,
@@ -123,7 +127,7 @@ pub struct BstreamReader<'a> {
 
 // }
 impl<'a> BstreamReader<'a>{
-    pub fn new(stream: &'a Vec<u8>) -> BstreamReader<'a> {
+    pub fn new(stream: &'a [u8]) -> BstreamReader<'a> {
         BstreamReader {
             stream,
             stream_offset:0,

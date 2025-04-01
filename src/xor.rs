@@ -18,8 +18,12 @@ impl XORChunk {
         String::from("XOR")
     }
 
-    pub fn iterator(&mut self) -> XORIterator {
-        XORIterator::new(self.b.bytes())
+    fn bytes(&self) -> &[u8] {
+        self.b.read_bytes()
+    }
+
+    pub fn iterator(&self) -> XORIterator {
+        XORIterator::new(self.bytes())
     }
     pub fn appender(&mut self) -> Result<XORAppender,Error>{
         // To get an appender we must know the state it would have if we had
@@ -176,7 +180,7 @@ struct XORIterator<'a> {
 }
 
 impl<'a> XORIterator<'a> {
-    pub fn new(stream: &'a Vec<u8>) -> XORIterator<'a> {
+    pub fn new(stream: &'a [u8]) -> XORIterator<'a> {
         // read first 2 bytes as chunk header
         let mut br = BstreamReader::new(stream);
         let mut num_total:u16 = 0;
@@ -257,7 +261,7 @@ impl Iterator for XORIterator<'_> {
 
         // read rest data point
         let mut d:u8 = 0;
-        for i in 0..4 {
+        for _i in 0..4 {
             d = d << 1;
             let bit = self.read_bit().ok()?;
             if bit == 0 {
@@ -370,6 +374,8 @@ fn test_xor_chunk() {
             val = val - rand::thread_rng().gen_range(1..1000000) as f64;
         }
 
+        // Start with a new appender every 10th sample. This emulates starting
+		// appending to a partially filled chunk.
         if i %10 == 0 {
             appender = chunk.appender().unwrap();
         }
@@ -380,7 +386,7 @@ fn test_xor_chunk() {
         });
     }
 
-    // 1. 
+    // 1. Expand iterator in simple case.
     let mut reader = chunk.iterator();
     let mut res = vec![];
     while let Some(_) = reader.next() {
@@ -390,4 +396,16 @@ fn test_xor_chunk() {
         });
     }
     assert_eq!(res, cases);
+
+    // 2. Expand second iterator while reusing first one.
+    let mut reader_2 = chunk.iterator();
+    let mut res_2 = vec![];
+    while let Some(_) = reader_2.next() {
+        res_2.push(DataPoint{
+            ts: reader_2.t,
+            val: reader_2.val
+        });
+    }
+    assert_eq!(res_2, cases);
+    reader.next();
 }
